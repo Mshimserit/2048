@@ -11,3 +11,6 @@ unpackage/
 # OS
 .DS_Store
 Thumbs.db
+
+# 文档
+prd.md
