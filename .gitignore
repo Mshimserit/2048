@@ -1,0 +1,13 @@
+# 构建产物
+unpackage/
+*/unpackage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

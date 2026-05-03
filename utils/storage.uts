@@ -1,0 +1,188 @@
+export type GameSnapshot = {
+	board : number[][]
+	score : number
+	bestScore : number
+	status : string
+	timestamp : number
+}
+
+export type TimeRecord = {
+	bestTime : number | null
+	hasEverWon : boolean
+}
+
+export type HistoryStep = {
+	board : number[][]
+	score : number
+}
+
+function getBestScoreKey(boardSize : number) : string {
+	return `bestScore_${boardSize}`
+}
+
+function getThemeKey() : string {
+	return `themePreference`
+}
+
+function getGameStateKey(boardSize : number) : string {
+	return `gameState_${boardSize}`
+}
+
+function getTimeRecordKey(boardSize : number) : string {
+	return `timeRecord_${boardSize}`
+}
+
+export function saveBestScore(score : number, boardSize : number) : void {
+	try {
+		uni.setStorageSync(getBestScoreKey(boardSize), score)
+	} catch (e) {
+		console.error('Failed to save best score:', e)
+	}
+}
+
+export function loadBestScore(boardSize : number) : number {
+	try {
+		let score = uni.getStorageSync(getBestScoreKey(boardSize))
+		if (score == null) {
+			return 0
+		}
+		if (typeof score === 'string') {
+			let parsed = parseInt(score as string)
+			return isNaN(parsed) ? 0 : parsed
+		}
+		if (typeof score === 'number') {
+			return score as number
+		}
+		return 0
+	} catch (e) {
+		console.error('Failed to load best score:', e)
+		return 0
+	}
+}
+
+export function saveTheme(theme : string) : void {
+	try {
+		uni.setStorageSync(getThemeKey(), theme)
+	} catch (e) {
+		console.error('Failed to save theme:', e)
+	}
+}
+
+export function loadTheme() : string {
+	try {
+		let theme = uni.getStorageSync(getThemeKey())
+		return theme != null ? (theme as string) : 'auto'
+	} catch (e) {
+		console.error('Failed to load theme:', e)
+		return 'auto'
+	}
+}
+
+export function autoSaveGame(snapshot : GameSnapshot, boardSize : number) : void {
+	try {
+		let jsonStr = JSON.stringify(snapshot)
+		uni.setStorageSync(getGameStateKey(boardSize), jsonStr)
+	} catch (e) {
+		console.error('Failed to auto save game:', e)
+	}
+}
+
+export function loadAutoSave(boardSize : number) : GameSnapshot | null {
+	try {
+		let data = uni.getStorageSync(getGameStateKey(boardSize))
+		if (data == null) {
+			return null
+		}
+		let obj : UTSJSONObject
+		if (typeof data === 'string') {
+			let str = data as string
+			if (str == '') {
+				return null
+			}
+			obj = JSON.parse(str) as UTSJSONObject
+		} else {
+			obj = data as UTSJSONObject
+		}
+
+		let boardVal = obj.get('board')
+		if (boardVal == null) {
+			return null
+		}
+		let scoreVal = obj.get('score')
+		if (scoreVal == null) {
+			return null
+		}
+		let bestScoreVal = obj.get('bestScore')
+		if (bestScoreVal == null) {
+			return null
+		}
+		let statusVal = obj.get('status')
+		if (statusVal == null) {
+			return null
+		}
+		let timestampVal = obj.get('timestamp')
+		if (timestampVal == null) {
+			return null
+		}
+
+		let snapshot : GameSnapshot = {
+			board: boardVal as number[][],
+			score: scoreVal as number,
+			bestScore: bestScoreVal as number,
+			status: statusVal as string,
+			timestamp: timestampVal as number
+		}
+		return snapshot
+	} catch (e) {
+		console.error('Failed to load auto save:', e)
+		return null
+	}
+}
+
+export function clearAutoSave(boardSize : number) : void {
+	try {
+		uni.removeStorageSync(getGameStateKey(boardSize))
+	} catch (e) {
+		console.error('Failed to clear auto save:', e)
+	}
+}
+
+export function saveTimeRecord(record : TimeRecord, boardSize : number) : void {
+	try {
+		let jsonStr = JSON.stringify(record)
+		uni.setStorageSync(getTimeRecordKey(boardSize), jsonStr)
+	} catch (e) {
+		console.error('Failed to save time record:', e)
+	}
+}
+
+export function loadTimeRecord(boardSize : number) : TimeRecord {
+	try {
+		let data = uni.getStorageSync(getTimeRecordKey(boardSize))
+		if (data == null) {
+			return { bestTime: null, hasEverWon: false }
+		}
+		let obj : UTSJSONObject
+		if (typeof data === 'string') {
+			let str = data as string
+			if (str == '') {
+				return { bestTime: null, hasEverWon: false }
+			}
+			obj = JSON.parse(str) as UTSJSONObject
+		} else {
+			obj = data as UTSJSONObject
+		}
+
+		let bestTimeVal = obj.get('bestTime')
+		let hasEverWonVal = obj.get('hasEverWon')
+
+		let record : TimeRecord = {
+			bestTime: bestTimeVal != null ? bestTimeVal as number : null,
+			hasEverWon: hasEverWonVal != null ? hasEverWonVal as boolean : false
+		}
+		return record
+	} catch (e) {
+		console.error('Failed to load time record:', e)
+	}
+	return { bestTime: null, hasEverWon: false }
+}

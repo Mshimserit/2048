@@ -1,0 +1,832 @@
+<template>
+	<view class="container" :class="isDark ? 'dark-theme' : 'light-theme'">
+		<view class="header">
+			<text class="title">2048</text>
+			<view class="header-right">
+				<view class="size-selector" @click="showSizeSelector">
+					<text class="size-text">{{boardSize}}×{{boardSize}}</text>
+				</view>
+				<view class="theme-btn" @click="toggleTheme">
+					<text class="theme-icon">{{isDark ? '☀' : '☾'}}</text>
+				</view>
+			</view>
+		</view>
+
+		<view class="score-panel">
+			<view class="score-row">
+				<view class="score-item">
+					<text class="score-label">SCORE</text>
+					<text class="score-value">{{score}}</text>
+				</view>
+				<view class="score-item">
+					<text class="score-label">BEST</text>
+					<text class="score-value">{{bestScore > 0 ? bestScore : 0}}</text>
+				</view>
+			</view>
+			<view class="score-row">
+				<view class="score-item">
+					<text class="score-label">TIME</text>
+					<text class="score-value">{{formatTime(currentTime)}}</text>
+				</view>
+				<view class="score-item">
+					<text class="score-label">BEST TIME</text>
+					<text class="score-value">{{bestTime != null ? formatTime(bestTime as number) : '--:--'}}</text>
+				</view>
+			</view>
+		</view>
+
+		<view class="board-container"
+			@touchstart="onTouchStart"
+			@touchmove="onTouchMove"
+			@touchend="onTouchEnd">
+			<view class="board">
+				<view class="row" v-for="(row, rowIndex) in board" :key="rowIndex">
+					<view class="tile" v-for="(value, colIndex) in row" :key="colIndex" :class="getTileClass(value)" :style="{width: getTileWidth(), height: getTileWidth()}">
+						<text class="tile-text" :class="getTextClass(value)">
+							{{value > 0 ? value : ''}}
+						</text>
+					</view>
+				</view>
+			</view>
+		</view>
+
+		<view class="controls">
+			<view class="btn" @click="restartGame">
+				<text class="btn-text">NEW GAME</text>
+			</view>
+			<view class="btn" :class="undoBtnDisabled ? 'btn-disabled' : 'btn-active'" @click="undo">
+				<text class="btn-text">UNDO</text>
+			</view>
+			<view class="btn btn-exit" @click="exitGame">
+				<text class="btn-text">EXIT</text>
+			</view>
+		</view>
+
+		<view class="overlay" v-if="showOverlay">
+			<view class="overlay-content">
+				<text class="overlay-title">{{overlayTitle}}</text>
+				<text class="overlay-message">{{overlayMessage}}</text>
+				<view class="overlay-buttons">
+					<view class="btn" @click="restartGame" v-if="showRestartBtn">
+						<text class="btn-text">RESTART</text>
+					</view>
+					<view class="btn" @click="continueGame" v-if="showContinueBtn">
+						<text class="btn-text">CONTINUE</text>
+					</view>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { Direction, move, addRandomTile, isGameOver, isGameWin, getWinTarget, initBoard, BoardSize } from '../../utils/gameLogic.uts'
+	import { saveBestScore, loadBestScore, saveTheme, loadTheme, autoSaveGame, loadAutoSave, clearAutoSave, saveTimeRecord, loadTimeRecord, HistoryStep, GameSnapshot, TimeRecord } from '../../utils/storage.uts'
+
+	const boardSize = ref<BoardSize>(4)
+	const board = ref<number[][]>(initBoard(4))
+	const score = ref(0)
+	const bestScore = ref(0)
+	const gameStatus = ref<string>('playing')
+	const showOverlay = ref(false)
+	const overlayTitle = ref('')
+	const overlayMessage = ref('')
+	const showRestartBtn = ref(false)
+	const showContinueBtn = ref(false)
+
+	const historyStack = ref<HistoryStep[]>([])
+	const MAX_HISTORY = 5
+
+	let startTime : number = 0
+	let timerInterval : number = -1
+	const currentTime = ref(0)
+	const bestTime = ref<number | null>(null)
+
+	const isDark = ref(false)
+	let themePreference = ref<string>('auto')
+	let touchStartX = 0
+	let touchStartY = 0
+	let lastMoveTime = 0
+	const DEBOUNCE_TIME = 200
+	const SWIPE_THRESHOLD = 15
+
+	const undoBtnDisabled = ref(false)
+
+	function getTileWidth() : string {
+		let size = boardSize.value
+		if (size == 4) {
+			return '75px'
+		} else if (size == 5) {
+			return '60px'
+		} else {
+			return '50px'
+		}
+	}
+
+	function getTileClass(value : number) : string {
+		if (value == 0) return 'tile-empty'
+		if (value >= 2048) return 'tile-2048'
+		return 'tile-' + value.toString()
+	}
+
+	function getTextClass(value : number) : string {
+		if (value <= 4) return 'tile-text-dark'
+		return 'tile-text-light'
+	}
+
+	function applyTheme() : void {
+		if (themePreference.value == 'light') {
+			isDark.value = false
+		} else if (themePreference.value == 'dark') {
+			isDark.value = true
+		} else {
+			isDark.value = false
+		}
+	}
+
+	function stopTimer() : void {
+		if (timerInterval != -1) {
+			clearInterval(timerInterval)
+			timerInterval = -1
+		}
+	}
+
+	function startTimer() : void {
+		stopTimer()
+		startTime = Date.now()
+		currentTime.value = 0
+		timerInterval = setInterval(() => {
+			let elapsed = Math.floor((Date.now() - startTime) / 1000)
+			currentTime.value = elapsed
+		}, 1000)
+	}
+
+	function formatTime(seconds : number) : string {
+		let mins = Math.floor(seconds / 60)
+		let secs = seconds % 60
+		let minStr = mins < 10 ? '0' + mins.toString() : mins.toString()
+		let secStr = secs < 10 ? '0' + secs.toString() : secs.toString()
+		return minStr + ':' + secStr
+	}
+
+	function loadBestScoreFromStorage() : void {
+		bestScore.value = loadBestScore(boardSize.value)
+	}
+
+	function loadTimeRecordData() : void {
+		let record = loadTimeRecord(boardSize.value)
+		bestTime.value = record.bestTime
+	}
+
+	function saveGameState() : void {
+		let snapshot : GameSnapshot = {
+			board: board.value,
+			score: score.value,
+			bestScore: bestScore.value,
+			status: gameStatus.value,
+			timestamp: Date.now()
+		}
+		autoSaveGame(snapshot, boardSize.value)
+	}
+
+	function pushHistory() : void {
+		let oldBoard : number[][] = []
+		let i = 0
+		while (i < board.value.length) {
+			let row : number[] = []
+			let j = 0
+			while (j < board.value[i].length) {
+				row.push(board.value[i][j])
+				j++
+			}
+			oldBoard.push(row)
+			i++
+		}
+		let step : HistoryStep = {
+			board: oldBoard,
+			score: score.value
+		}
+		historyStack.value.push(step)
+		if (historyStack.value.length > MAX_HISTORY) {
+			historyStack.value.splice(0, 1)
+		}
+	}
+
+	function updateUndoBtnState() : void {
+		undoBtnDisabled.value = historyStack.value.length == 0 || gameStatus.value != 'playing'
+	}
+
+	function startNewGame() : void {
+		stopTimer()
+		board.value = initBoard(boardSize.value)
+		score.value = 0
+		gameStatus.value = 'playing'
+		historyStack.value = []
+		showOverlay.value = false
+		updateUndoBtnState()
+		saveGameState()
+		startTimer()
+	}
+
+	function changeBoardSize(newSize : BoardSize) : void {
+		boardSize.value = newSize
+		clearAutoSave(boardSize.value)
+		loadBestScoreFromStorage()
+		loadTimeRecordData()
+		startNewGame()
+	}
+
+	function loadThemePreference() : void {
+		themePreference.value = loadTheme()
+		applyTheme()
+	}
+
+	function toggleTheme() : void {
+		if (themePreference.value == 'light') {
+			themePreference.value = 'dark'
+		} else if (themePreference.value == 'dark') {
+			themePreference.value = 'auto'
+		} else {
+			themePreference.value = 'light'
+		}
+		saveTheme(themePreference.value)
+		applyTheme()
+	}
+
+	function showSizeSelector() : void {
+		let sizes = ['4x4', '5x5', '6x6']
+		uni.showActionSheet({
+			itemList: sizes,
+			success: (res) => {
+				let newSize : BoardSize = 4
+				if (res.tapIndex == 0) newSize = 4
+				else if (res.tapIndex == 1) newSize = 5
+				else newSize = 6
+
+				if (newSize != boardSize.value) {
+					uni.showModal({
+						title: 'Confirm',
+						content: 'Switching board size will reset the current game. Continue?',
+						success: (modalRes) => {
+							if (modalRes.confirm) {
+								changeBoardSize(newSize)
+							}
+						}
+					})
+				}
+			}
+		})
+	}
+
+	function undo() : void {
+		if (undoBtnDisabled.value) return
+
+		let lastStep = historyStack.value.pop()
+		if (lastStep == null) return
+
+		board.value = lastStep.board
+		score.value = lastStep.score
+		gameStatus.value = 'playing'
+		showOverlay.value = false
+		updateUndoBtnState()
+		saveGameState()
+	}
+
+	function restartGame() : void {
+		showOverlay.value = false
+		startNewGame()
+	}
+
+	function continueGame() : void {
+		showOverlay.value = false
+		gameStatus.value = 'playing'
+	}
+
+	function exitGame() : void {
+		saveGameState()
+		// #ifdef APP-ANDROID
+		uni.exit()
+		// #endif
+		// #ifdef APP-IOS
+		uni.navigateBack()
+		// #endif
+		// #ifdef H5
+		window.close()
+		// #endif
+	}
+
+	function handleMove(direction : Direction) : void {
+		let now = Date.now()
+		if (now - lastMoveTime < DEBOUNCE_TIME) {
+			return
+		}
+		lastMoveTime = now
+
+		if (gameStatus.value == 'lose') {
+			return
+		}
+
+		let winTarget = getWinTarget(boardSize.value)
+		let wasAlreadyWon = isGameWin(board.value, winTarget)
+
+		let result = move(board.value, direction)
+
+		if (result.isChanged) {
+			pushHistory()
+			updateUndoBtnState()
+			board.value = result.newBoard
+			score.value += result.scoreGained
+
+			if (score.value > bestScore.value) {
+				bestScore.value = score.value
+				saveBestScore(bestScore.value, boardSize.value)
+			}
+
+			addRandomTile(board.value)
+
+			if (!wasAlreadyWon && isGameWin(board.value, winTarget)) {
+				gameStatus.value = 'win'
+				stopTimer()
+				let timeRecord = loadTimeRecord(boardSize.value)
+				let currentElapsed = currentTime.value
+
+				let isNewBest = timeRecord.bestTime == null || currentElapsed < timeRecord.bestTime
+				if (isNewBest) {
+					bestTime.value = currentElapsed
+					timeRecord.bestTime = currentElapsed
+				} else {
+					bestTime.value = timeRecord.bestTime
+				}
+
+				timeRecord.hasEverWon = true
+				saveTimeRecord(timeRecord, boardSize.value)
+
+				let contentStr = 'Score: ' + score.value.toString()
+				if (isNewBest) {
+					contentStr = contentStr + ' NEW BEST TIME!'
+				}
+				uni.showModal({
+					title: 'YOU WIN!',
+					content: contentStr,
+					confirmText: 'RESTART',
+					cancelText: 'CONTINUE',
+					success: (res) => {
+						if (res.confirm) {
+							restartGame()
+						}
+					}
+				})
+			} else if (isGameOver(board.value)) {
+				gameStatus.value = 'lose'
+				stopTimer()
+				uni.showModal({
+					title: 'GAME OVER',
+					content: 'Score: ' + score.value.toString(),
+					confirmText: 'RESTART',
+					showCancel: false,
+					success: (res) => {
+						restartGame()
+					}
+				})
+			}
+
+			saveGameState()
+		}
+	}
+
+	function onTouchStart(e : UniTouchEvent) : void {
+		let touches = e.touches
+		if (touches.length > 0) {
+			touchStartX = touches[0].clientX
+			touchStartY = touches[0].clientY
+		}
+	}
+
+	function onTouchMove(e : UniTouchEvent) : void {
+	}
+
+	function onTouchEnd(e : UniTouchEvent) : void {
+		let changedTouches = e.changedTouches
+		if (changedTouches.length == 0) return
+
+		let touchEndX = changedTouches[0].clientX
+		let touchEndY = changedTouches[0].clientY
+
+		let dx = touchEndX - touchStartX
+		let dy = touchEndY - touchStartY
+
+		let absDx = dx < 0 ? -dx : dx
+		let absDy = dy < 0 ? -dy : dy
+
+		if (absDx < SWIPE_THRESHOLD && absDy < SWIPE_THRESHOLD) {
+			return
+		}
+
+		if (absDx > absDy) {
+			if (dx > 0) {
+				handleMove(Direction.RIGHT)
+			} else {
+				handleMove(Direction.LEFT)
+			}
+		} else {
+			if (dy > 0) {
+				handleMove(Direction.DOWN)
+			} else {
+				handleMove(Direction.UP)
+			}
+		}
+	}
+
+	function loadSavedGame() : void {
+		let snapshot = loadAutoSave(boardSize.value)
+		if (snapshot != null && snapshot.board.length > 0) {
+			board.value = snapshot.board
+			score.value = snapshot.score
+			gameStatus.value = snapshot.status
+
+			if (gameStatus.value != 'playing') {
+				overlayTitle.value = gameStatus.value == 'win' ? 'YOU WIN!' : 'GAME OVER'
+				overlayMessage.value = 'Score: ' + score.value.toString()
+				showRestartBtn.value = true
+				showContinueBtn.value = gameStatus.value == 'win'
+				showOverlay.value = true
+			}
+			updateUndoBtnState()
+		} else {
+			board.value = initBoard(boardSize.value)
+		}
+	}
+
+	onMounted(() => {
+		loadThemePreference()
+		loadBestScoreFromStorage()
+		loadSavedGame()
+		loadTimeRecordData()
+		updateUndoBtnState()
+		if (gameStatus.value == 'playing') {
+			startTimer()
+		}
+	})
+
+	onUnmounted(() => {
+		stopTimer()
+		saveGameState()
+	})
+
+	onHide(() => {
+		saveGameState()
+	})
+</script>
+
+<style scoped>
+	.container {
+		flex: 1;
+		flex-direction: column;
+		align-items: center;
+		padding-top: 30px;
+		transition: background-color 0.2s;
+	}
+
+	.light-theme {
+		background-color: #faf8ef;
+	}
+
+	.dark-theme {
+		background-color: #1e1e1e;
+	}
+
+	.header {
+		flex-direction: row;
+		justify-content: space-between;
+		align-items: center;
+		width: 340px;
+		margin-bottom: 15px;
+	}
+
+	.title {
+		font-size: 48px;
+		font-weight: bold;
+	}
+
+	.light-theme .title {
+		color: #776e65;
+	}
+
+	.dark-theme .title {
+		color: #e0e0e0;
+	}
+
+	.header-right {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.size-selector {
+		background-color: #8f7a66;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin-right: 10px;
+	}
+
+	.size-text {
+		color: #f9f6f2;
+		font-size: 14px;
+		font-weight: bold;
+	}
+
+	.theme-btn {
+		background-color: #8f7a66;
+		border-radius: 8px;
+		padding: 8px 12px;
+	}
+
+	.theme-icon {
+		color: #f9f6f2;
+		font-size: 18px;
+	}
+
+	.score-panel {
+		flex-direction: column;
+		width: 340px;
+		margin-bottom: 15px;
+	}
+
+	.score-row {
+		flex-direction: row;
+		justify-content: space-between;
+		margin-bottom: 8px;
+	}
+
+	.score-item {
+		flex: 1;
+		flex-direction: column;
+		align-items: center;
+		background-color: #bbada0;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin: 0 4px;
+	}
+
+	.dark-theme .score-item {
+		background-color: #4a4a4a;
+	}
+
+	.score-label {
+		font-size: 10px;
+		font-weight: bold;
+		color: #eee4da;
+		text-align: center;
+	}
+
+	.dark-theme .score-label {
+		color: #a0a0a0;
+	}
+
+	.score-value {
+		font-size: 18px;
+		font-weight: bold;
+		color: #ffffff;
+	}
+
+	.board-container {
+		background-color: #bbada0;
+		border-radius: 12px;
+		padding: 8px;
+		margin-bottom: 20px;
+	}
+
+	.dark-theme .board-container {
+		background-color: #4a4a4a;
+	}
+
+	.board {
+		flex-direction: column;
+	}
+
+	.row {
+		flex-direction: row;
+	}
+
+	.tile {
+		border-radius: 8px;
+		justify-content: center;
+		align-items: center;
+		margin: 4px;
+		transition: background-color 0.15s;
+	}
+
+	.tile-text {
+		font-weight: bold;
+	}
+
+	.tile-text-dark {
+		color: #776e65;
+	}
+
+	.dark-theme .tile-text-dark {
+		color: #e0e0e0;
+	}
+
+	.tile-text-light {
+		color: #f9f6f2;
+	}
+
+	.tile-empty {
+		background-color: #cdc1b4;
+	}
+
+	.dark-theme .tile-empty {
+		background-color: #3d3d3d;
+	}
+
+	.tile-2 {
+		background-color: #eee4da;
+	}
+
+	.dark-theme .tile-2 {
+		background-color: #3a3a3a;
+	}
+
+	.tile-4 {
+		background-color: #ede0c8;
+	}
+
+	.dark-theme .tile-4 {
+		background-color: #4a4a4a;
+	}
+
+	.tile-8 {
+		background-color: #f2b179;
+	}
+
+	.dark-theme .tile-8 {
+		background-color: #9e4a1b;
+	}
+
+	.tile-16 {
+		background-color: #f59563;
+	}
+
+	.dark-theme .tile-16 {
+		background-color: #b85d1a;
+	}
+
+	.tile-32 {
+		background-color: #f67c5f;
+	}
+
+	.dark-theme .tile-32 {
+		background-color: #c75a1a;
+	}
+
+	.tile-64 {
+		background-color: #f65e3b;
+	}
+
+	.dark-theme .tile-64 {
+		background-color: #d65518;
+	}
+
+	.tile-128 {
+		background-color: #edcf72;
+	}
+
+	.dark-theme .tile-128 {
+		background-color: #e6c23f;
+	}
+
+	.tile-256 {
+		background-color: #edcc61;
+	}
+
+	.dark-theme .tile-256 {
+		background-color: #e0bf38;
+	}
+
+	.tile-512 {
+		background-color: #edc850;
+	}
+
+	.dark-theme .tile-512 {
+		background-color: #dab832;
+	}
+
+	.tile-1024 {
+		background-color: #edc53f;
+	}
+
+	.dark-theme .tile-1024 {
+		background-color: #d4b12c;
+	}
+
+	.tile-2048 {
+		background-color: #edc22e;
+	}
+
+	.dark-theme .tile-2048 {
+		background-color: #ceaa26;
+	}
+
+	.controls {
+		flex-direction: row;
+		justify-content: space-between;
+		width: 340px;
+	}
+
+	.btn {
+		background-color: #8f7a66;
+		border-radius: 8px;
+		padding: 12px 20px;
+		flex: 1;
+		margin: 0 5px;
+		align-items: center;
+	}
+
+	.btn-active {
+		background-color: #8f7a66;
+	}
+
+	.btn-disabled {
+		background-color: #a09080;
+		opacity: 0.5;
+	}
+
+	.dark-theme .btn {
+		background-color: #6a6a6a;
+	}
+
+	.btn-exit {
+		background-color: #e74c3c;
+	}
+
+	.dark-theme .btn-exit {
+		background-color: #c0392b;
+	}
+
+	.btn-text {
+		color: #f9f6f2;
+		font-size: 14px;
+		font-weight: bold;
+	}
+
+	.overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(238, 228, 218, 0.73);
+		justify-content: center;
+		align-items: center;
+		z-index: 100;
+	}
+
+	.dark-theme .overlay {
+		background-color: rgba(30, 30, 30, 0.8);
+	}
+
+	.overlay-content {
+		background-color: #faf8ef;
+		border-radius: 12px;
+		padding: 30px;
+		align-items: center;
+		width: 280px;
+	}
+
+	.dark-theme .overlay-content {
+		background-color: #2d2d2d;
+	}
+
+	.overlay-title {
+		font-size: 36px;
+		font-weight: bold;
+		margin-bottom: 10px;
+	}
+
+	.light-theme .overlay-title {
+		color: #776e65;
+	}
+
+	.dark-theme .overlay-title {
+		color: #e0e0e0;
+	}
+
+	.overlay-message {
+		font-size: 18px;
+		margin-bottom: 20px;
+	}
+
+	.light-theme .overlay-message {
+		color: #776e65;
+	}
+
+	.dark-theme .overlay-message {
+		color: #a0a0a0;
+	}
+
+	.overlay-buttons {
+		flex-direction: row;
+		justify-content: space-around;
+		width: 100%;
+	}
+</style>
